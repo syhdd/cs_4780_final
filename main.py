@@ -18,6 +18,7 @@ from sklearn.utils import shuffle
 def read_file(path):
     df = pd.read_csv(path, sep=',', header=0, encoding='unicode_escape')
     return df
+
 def mean_std(df):
     df=(df-df.mean()).div(df.std())
     return df
@@ -26,22 +27,28 @@ def mean_std(df):
 def normalize(csvfile0,csvfile1,outname,flag=0):
     train_df = read_file(csvfile0)
     train_t_df=read_file(csvfile1)
-    t_values=train_t_df.loc[:,'value_t-1':'value_t-21']
+    t_values=train_t_df.loc[:,'value_t-1':'value_t-7']
     train_df['label'] = train_df['country'].rank(method='dense', ascending=True).astype(int)
     country_label=train_df['label']
     if(flag==0):
         label = train_df[['next_week_hospitalizations']]
-        feat = train_df.drop(['country','next_week_hospitalizations','label', 'date', 'year_week'], axis=1)
+        feat = train_df.drop(['country','next_week_hospitalizations', 'date', 'year_week'], axis=1)
     else:
-        feat = train_df.drop(['country','label', 'date', 'year_week'], axis=1)
-    t_values=mean_std(t_values)
-    feat=mean_std(feat)
-    feat=feat
-    t_values=t_values
+        feat = train_df.drop(['country', 'date', 'year_week'], axis=1)
+
+    feat = pd.concat([feat, t_values], axis=1)
+    dfs=[]
+    for i in range(0,15):
+        df=mean_std(feat[feat['label']==(i+1)])
+        dfs.append(df)
+    for i in range(1,15):
+        dfs[0]=pd.concat([dfs[0],dfs[i]])
+    feat=dfs[0]
+    feat = feat.drop(['label'], axis=1)
+
     feat=pd.concat([feat,country_label],axis=1)
     if(flag==0):
         feat=pd.concat([feat,label],axis=1)
-    feat=pd.concat([feat,t_values],axis=1)
     feat.to_csv(outname,index=False)
 
 normalize("train_creative.csv","train_creative_t_values.csv","train.csv")
@@ -70,12 +77,17 @@ def non_split(train_df):
     return x,y,z
 
 class CSVDataset(Dataset):
-    def __init__(self, train_df,label_df,country_labels):
+    def __init__(self, train_df,label_df,country_labels,flag=0):
         # Where the initial logic happens like reading a csv, doing data augmentation, etc.
         self.length=len(train_df)
-        self.country_labels=shuffle(country_labels,random_state=42)
-        self.labels = shuffle(label_df,random_state=42)
-        self.feat = shuffle(train_df,random_state=42)
+        if(flag==0):
+            self.country_labels=shuffle(country_labels,random_state=42)
+            self.labels = shuffle(label_df,random_state=42)
+            self.feat = shuffle(train_df,random_state=42)
+        else:
+            self.country_labels=country_labels
+            self.labels = label_df
+            self.feat = train_df
 
     def __len__(self):
         # Returns count of samples (an integer) you have.
@@ -90,9 +102,9 @@ class CSVDataset(Dataset):
 class Feedforward(torch.nn.Module):
     def __init__(self):
         super(Feedforward, self).__init__()
-        self.fc1 = torch.nn.Linear(28, 14)
-        #self.fc2 = torch.nn.Linear(7, 1)
-        self.fc3 = torch.nn.Linear(14, 1)
+        self.fc1 = torch.nn.Linear(14, 7)
+        #self.fc2 = torch.nn.Linear(14, 7)
+        self.fc3 = torch.nn.Linear(7, 1)
         self.relu = torch.nn.ReLU()
         self.sig=nn.Sigmoid()
 
@@ -117,7 +129,7 @@ def train(csvfile,csvfile1,flag=0):
         criterion = nn.MSELoss()
         criterions.append(criterion)
         # Create your optimizer
-        optimizer = optim.SGD(net.parameters(), momentum=0.9, weight_decay=0.1, lr=0.9 * 10 ** -7)
+        optimizer = optim.SGD(net.parameters(), momentum=0.9, weight_decay=0.15, lr=1 * 10 ** -7)
         optimizers.append(optimizer)
     if(flag==0):
         x_train, x_test, y_train, y_test,z_train,z_test = split(train_df)
@@ -128,7 +140,7 @@ def train(csvfile,csvfile1,flag=0):
         dataloader = DataLoader(dataset)
         dataloader2 = DataLoader(dataset2)
         # Beging training!
-        for epoch in range(50):
+        for epoch in range(20):
             running_loss = 0.0
             for i, (input, target,country_label) in enumerate(dataloader):
                 # You always want to use zero_grad(), backward(), and step() in the following order.
@@ -152,17 +164,12 @@ def train(csvfile,csvfile1,flag=0):
                 #print(output)
                 loss = criterions[country_label-1](output, torch.tensor(target,dtype=(torch.float)))
                 running_loss4 += loss.item()
-
             print('valid_loss: %.3f' % (running_loss4 / 400))
-            #print(net.parameters())
-        for i, (input, target,country_label) in enumerate(dataloader2):
-            output = nets[country_label-1](torch.tensor(input,dtype=torch.float))
-            print(output)
     else:
         x,y,z=non_split(train_df)
         dataset = CSVDataset(x, y, z)
         dataloader = DataLoader(dataset)
-        for epoch in range(50):
+        for epoch in range(20):
             for i, (input, target,country_label) in enumerate(dataloader):
                 # You always want to use zero_grad(), backward(), and step() in the following order.
                 # zero_grad clears old gradients from the last step (otherwise you’d just accumulate the gradients from all loss.backward() calls).
@@ -178,7 +185,7 @@ def train(csvfile,csvfile1,flag=0):
         pred=[]
         pred_z=np.array(test_df[['label']])
         pred_x=np.array(test_df.drop(['label'],axis=1))
-        dataset2 = CSVDataset(pred_x, y, pred_z)
+        dataset2 = CSVDataset(pred_x, y, pred_z,1)
         dataloader2 = DataLoader(dataset2)
 
         for i, (input, target, country_label) in enumerate(dataloader2):
